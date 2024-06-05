@@ -220,7 +220,7 @@ class InfoProResNet(nn.Module):
             x = self.conv1(img)
             x = self.bn1(x)
             x = self.relu(x)
-
+            x1 = x.clone()
 
             if local_module_i <= self.local_module_num - 2:
                 if self.infopro_config[local_module_i][0] == stage_i \
@@ -240,8 +240,7 @@ class InfoProResNet(nn.Module):
                     x = eval('self.layer' + str(stage_i))[layer_i](x)
 
                     if local_module_i <= self.local_module_num - 2:
-                        if self.infopro_config[local_module_i][0] == stage_i \
-                                and self.infopro_config[local_module_i][1] == layer_i:
+                        if self.infopro_config[local_module_i][0] == stage_i and self.infopro_config[local_module_i][1] == layer_i:
                             ratio = local_module_i / (self.local_module_num - 2) if self.local_module_num > 2 else 0
                             ixx_r = ixx_1 * (1 - ratio) + ixx_2 * ratio
                             ixy_r = ixy_1 * (1 - ratio) + ixy_2 * ratio
@@ -255,9 +254,18 @@ class InfoProResNet(nn.Module):
             x = self.avgpool(x)
             x = x.view(x.size(0), -1)
             logits = self.fc(x)
-            loss = self.criterion_ce(logits, target) + 0.01*(F.kl_div(self.sub_layer1(x),self.layer1(x)) + F.kl_div(self.sub_layer2(x),self.layer2(x)) + F.kl_div(self.sub_layer3(x),self.layer3(x)))
-            loss.backward()
+            loss = self.criterion_ce(logits, target)
+            for stage_i1 in (1,2,3):
+                for layer_i1 in range(len(eval('self.sub_layer'+str(stage_i)))):
+                    x1 = eval('self.sub_layer' + str(stage_i))[layer_i1](x1)
+                x1 = self.avgpool(x1)
+                x1 = x1.view(x1.size(0), -1)
+                logits1 = self.fc(x1)
+                loss1 = 0.01*(F.kl_div(logits1,logits))
+                loss = loss + loss1
+                loss.backward()
             return logits, loss
+
 
         else:
             x = self.conv1(img)
@@ -271,9 +279,10 @@ class InfoProResNet(nn.Module):
             x = self.avgpool(x)
             x = x.view(x.size(0), -1)
             logits = self.fc(x)
-            loss = self.criterion_ce(logits, target) + 0.01*(F.kl_div(self.sub_layer1(x),self.layer1(x)) + F.kl_div(self.sub_layer2(x),self.layer2(x)) + F.kl_div(self.sub_layer3(x),self.layer3(x)))
+            loss = self.criterion_ce(logits, target)
             return logits, loss
 
+        
 
 def resnet20(**kwargs):
     model = InfoProResNet(BasicBlock, [3, 3, 3], arch='resnet20', **kwargs)
