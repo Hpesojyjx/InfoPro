@@ -200,7 +200,7 @@ def main():
 
     # create model
     if args.model == 'resnet':
-        model = eval('networks.resnet.resnet' + str(args.layers))\
+        model = eval('networks.resnet.resnet' + "110")\
             (local_module_num=args.local_module_num,
              batch_size=training_configurations[args.model]['batch_size'],
              image_size=image_size,
@@ -208,13 +208,16 @@ def main():
              dataset=args.dataset,
              class_num=class_num,
              wide_list=(16, 16, 32, 64),
-             dropout_rate=args.droprate,
+             dropout_rate=0.0,
              aux_net_config=args.aux_net_config,
              local_loss_mode=args.local_loss_mode,
              aux_net_widen=args.aux_net_widen,
              aux_net_feature_dim=args.aux_net_feature_dim)
     else:
         raise NotImplementedError
+
+
+#dataset cifar10 --model resnet --layers 110 --droprate 0.0 --cos_lr --local_module_num 2  --local_loss_mode contrast --aux_net_widen 1 --aux_net_feature_dim 128 --ixx_1 5 --ixy_1 0.1 --ixx_2 0 --ixy_2 0   --aux_net_config 1c2f --balanced_memory
 
     if not os.path.isdir(check_point):
         mkdir_p(check_point)

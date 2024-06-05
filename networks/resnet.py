@@ -188,7 +188,7 @@ class InfoProResNet(nn.Module):
         self.sub_layers = layers
         return nn.Sequential(*layers)
     
-    def _make_sub_layers(tensor,blocks):
+    def _make_sub_layers(self,tensor,blocks):
         x = random.randint(0,blocks)
         while x>0:
             tensor.pop()
