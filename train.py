@@ -1,174 +1,4 @@
-import argparse
-import os
-import shutil
-import time
-import errno
-import math
-import numpy as np
-
-import torch
-import torch.nn.functional as F
-import torch.nn.parallel
-import torch.backends.cudnn as cudnn
-import torch.optim
-import torch.utils.data
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
-
-import networks.resnet
-
-parser = argparse.ArgumentParser(description='InfoPro-PyTorch')
-parser.add_argument('--dataset', default='cifar10', type=str,
-                    help='dataset: [cifar10|stl10|svhn]')
-
-parser.add_argument('--model', default='resnet', type=str,
-                    help='resnet is supported currently')
-
-parser.add_argument('--layers', default=0, type=int,
-                    help='total number of layers (have to be explicitly given!)')
-
-parser.add_argument('--droprate', default=0.0, type=float,
-                    help='dropout probability (default: 0.0)')
-
-parser.add_argument('--no-augment', dest='augment', action='store_false',
-                    help='whether to use standard augmentation (default: True)')
-parser.set_defaults(augment=True)
-
-parser.add_argument('--checkpoint', default='checkpoint', type=str, metavar='PATH',
-                    help='path to save checkpoint (default: checkpoint)')
-parser.add_argument('--resume', default='', type=str,
-                    help='path to latest checkpoint (default: none)')
-
-parser.add_argument('--name', default='', type=str,
-                    help='name of experiment')
-parser.add_argument('--no', default='1', type=str,
-                    help='index of the experiment (for recording convenience)')
-parser.add_argument('--print-freq', '-p', default=10, type=int,
-                    help='print frequency (default: 10)')
-
-
-# Cosine learning rate
-parser.add_argument('--cos_lr', dest='cos_lr', action='store_true',
-                    help='whether to use cosine learning rate')
-parser.set_defaults(cos_lr=False)
-
-
-# InfoPro
-parser.add_argument('--local_module_num', default=1, type=int,
-                    help='number of local modules (1 refers to end-to-end training)')
-
-parser.add_argument('--balanced_memory', dest='balanced_memory', action='store_true',
-                    help='whether to split local modules with balanced GPU memory (InfoPro* in the paper)')
-parser.set_defaults(balanced_memory=False)
-
-parser.add_argument('--aux_net_config', default='1c2f', type=str,
-                    help='architecture of auxiliary classifier / contrastive head '
-                         '(default: 1c2f; 0c1f refers to greedy SL)'
-                         '[0c1f|0c2f|1c1f|1c2f|1c3f|2c2f]')
-
-parser.add_argument('--local_loss_mode', default='contrast', type=str,
-                    help='ways to estimate the task-relevant info I(x, y)'
-                         '[contrast|cross_entropy]')
-
-parser.add_argument('--aux_net_widen', default=1.0, type=float,
-                    help='widen factor of the two auxiliary nets (default: 1.0)')
-
-parser.add_argument('--aux_net_feature_dim', default=0, type=int,
-                    help='number of hidden features in auxiliary classifier / contrastive head '
-                         '(default: 128)')
-
-# The hyper-parameters \lambda_1 and \lambda_2 for 1st and (K-1)th local modules.
-# Note that we assume they change linearly between these two modules.
-# (The last module always uses standard end-to-end loss)
-# See our paper for more details.
-
-parser.add_argument('--ixx_1', default=0.0, type=float,)   # \lambda_1 for 1st local module
-parser.add_argument('--ixy_1', default=0.0, type=float,)   # \lambda_2 for 1st local module
-
-parser.add_argument('--ixx_2', default=0.0, type=float,)   # \lambda_1 for (K-1)th local module
-parser.add_argument('--ixy_2', default=0.0, type=float,)   # \lambda_2 for (K-1)th local module
-
-args = parser.parse_args()
-
-# Configurations adopted for training deep networks.
-training_configurations = {
-    'resnet': {
-        'epochs': 160,
-        'batch_size': 1024 if args.dataset in ['cifar10', 'svhn'] else 128,
-        'initial_learning_rate': 0.8 if args.dataset in ['cifar10', 'svhn'] else 0.1,
-        'changing_lr': [80, 120],
-        'lr_decay_rate': 0.1,
-        'momentum': 0.9,
-        'nesterov': True,
-        'weight_decay': 1e-4,
-    }
-}
-
-record_path = './' \
-              + ('InfoPro*_' if args.balanced_memory else 'InfoPro_') \
-              + str(args.dataset) \
-              + '_' + str(args.model) + str(args.layers) \
-              + '_K_' + str(args.local_module_num) \
-              + '_' + str(args.name) \
-              + '/' \
-              + 'no_' + str(args.no) \
-              + '_aux_net_config_' + str(args.aux_net_config) \
-              + '_local_loss_mode_' + str(args.local_loss_mode) \
-              + '_aux_net_widen_' + str(args.aux_net_widen) \
-              + '_aux_net_feature_dim_' + str(args.aux_net_feature_dim) \
-              + '_ixx_1_' + str(args.ixx_1) \
-              + '_ixy_1_' + str(args.ixy_1) \
-              + '_ixx_2_' + str(args.ixx_2) \
-              + '_ixy_2_' + str(args.ixy_2) \
-              + ('_cos_lr_' if args.cos_lr else '')
-
-record_file = record_path + '/training_process.txt'
-accuracy_file = record_path + '/accuracy_epoch.txt'
-loss_file = record_path + '/loss_epoch.txt'
-check_point = os.path.join(record_path, args.checkpoint)
-
-
-def main():
-    global best_prec1
-    best_prec1 = 0
-    global val_acc
-    val_acc = []
-
-    class_num = args.dataset in ['cifar10', 'sl10', 'svhn'] and 10 or 100
-
-    if 'cifar' in args.dataset:
-        normalize = transforms.Normalize(mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
-                                         std=[x / 255.0 for x in [63.0, 62.1, 66.7]])
-        kwargs_dataset_train = {'train': True}
-        kwargs_dataset_test = {'train': False}
-    else:
-        normalize = transforms.Normalize(mean=[x / 255 for x in [127.5, 127.5, 127.5]],
-                                         std=[x / 255 for x in [127.5, 127.5, 127.5]])
-        kwargs_dataset_train = {'split': 'train'}
-        kwargs_dataset_test = {'split': 'test'}
-
-    if args.augment:
-        if 'cifar' in args.dataset:
-            transform_train = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Lambda(lambda x: F.pad(x.unsqueeze(0),
-                                                  (4, 4, 4, 4), mode='reflect').squeeze()),
-                transforms.ToPILImage(),
-                transforms.RandomCrop(32),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                normalize,
-            ])
-            image_size = 32
-        elif 'stl' in args.dataset:
-            transform_train = transforms.Compose(
-                [transforms.RandomCrop(96, padding=4),
-                 transforms.RandomHorizontalFlip(),
-                 transforms.ToTensor(),
-                 normalize])
-            image_size = 96
-        elif 'svhn' in args.dataset:
-            transform_train = transforms.Compose(
+m_train = transforms.Compose(
                 [transforms.RandomCrop(32, padding=2),
                  transforms.ToTensor(),
                  normalize])
@@ -200,7 +30,7 @@ def main():
 
     # create model
     if args.model == 'resnet':
-        model = eval('networks.resnet.resnet' + "110")\
+        model = eval('networks.resnet.resnet' + str(args.layers))\
             (local_module_num=args.local_module_num,
              batch_size=training_configurations[args.model]['batch_size'],
              image_size=image_size,
@@ -208,16 +38,13 @@ def main():
              dataset=args.dataset,
              class_num=class_num,
              wide_list=(16, 16, 32, 64),
-             dropout_rate=0.0,
+             dropout_rate=args.droprate,
              aux_net_config=args.aux_net_config,
              local_loss_mode=args.local_loss_mode,
              aux_net_widen=args.aux_net_widen,
              aux_net_feature_dim=args.aux_net_feature_dim)
     else:
         raise NotImplementedError
-
-
-#dataset cifar10 --model resnet --layers 110 --droprate 0.0 --cos_lr --local_module_num 2  --local_loss_mode contrast --aux_net_widen 1 --aux_net_feature_dim 128 --ixx_1 5 --ixy_1 0.1 --ixx_2 0 --ixy_2 0   --aux_net_config 1c2f --balanced_memory
 
     if not os.path.isdir(check_point):
         mkdir_p(check_point)
