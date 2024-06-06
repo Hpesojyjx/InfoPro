@@ -220,7 +220,6 @@ class InfoProResNet(nn.Module):
             x = self.conv1(img)
             x = self.bn1(x)
             x = self.relu(x)
-            x1 = x.clone()
 
             if local_module_i <= self.local_module_num - 2:
                 if self.infopro_config[local_module_i][0] == stage_i \
@@ -234,7 +233,7 @@ class InfoProResNet(nn.Module):
                     loss.backward()
                     x = x.detach()
                     local_module_i += 1
-
+            x1 = x.clone()
             for stage_i in (1, 2, 3):
                 for layer_i in range(self.layers[stage_i - 1]):
                     x = eval('self.layer' + str(stage_i))[layer_i](x)
@@ -256,8 +255,8 @@ class InfoProResNet(nn.Module):
             logits = self.fc(x)
             loss = self.criterion_ce(logits, target)
             for stage_i1 in (1,2,3):
-                for layer_i1 in range(len(eval('self.sub_layer'+str(stage_i)))):
-                    x1 = eval('self.sub_layer' + str(stage_i))[layer_i1](x1)
+                for layer_i1 in range(len(eval('self.sub_layer'+str(stage_i1)))):
+                    x1 = eval('self.sub_layer' + str(stage_i1))[layer_i1](x1)
                 x1 = self.avgpool(x1)
                 x1 = x1.view(x1.size(0), -1)
                 logits1 = self.fc(x1)
