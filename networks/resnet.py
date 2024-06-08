@@ -181,6 +181,7 @@ class InfoProResNet(nn.Module):
             )
         layers = []
         self.sub_layers = []
+
         layers.append(block(self.inplanes, planes, stride, downsample, dropout_rate=self.dropout_rate))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
@@ -189,7 +190,7 @@ class InfoProResNet(nn.Module):
         return nn.Sequential(*layers)
     
     def _make_sub_layers(self,tensor,blocks):
-        x = random.randint(0,blocks)
+        x = random.randint(0,blocks-1)
         while x>0:
             tensor.pop()
             x = x-1
@@ -234,7 +235,6 @@ class InfoProResNet(nn.Module):
                     x = x.detach()
                     local_module_i += 1
             x1 = x.clone()
-            local_module_i1 = local_module_i
             for stage_i in (1, 2, 3):
                 for layer_i in range(self.layers[stage_i - 1]):
                     x = eval('self.layer' + str(stage_i))[layer_i](x)
@@ -259,20 +259,8 @@ class InfoProResNet(nn.Module):
                 for layer_i1 in range(len(eval('self.sub_layer'+str(stage_i1)))):
                     x1 = eval('self.sub_layer' + str(stage_i1))[layer_i1](x1)
                 
-                    if local_module_i1 <= self.local_module_num - 2:
-                        if self.infopro_config[local_module_i1][0] == stage_i1 and self.infopro_config[local_module_i1][1] == layer_i1:
-                            ratio = local_module_i1 / (self.local_module_num - 2) if self.local_module_num > 2 else 0
-                            ixx_r = ixx_1 * (1 - ratio) + ixx_2 * ratio
-                            ixy_r = ixy_1 * (1 - ratio) + ixy_2 * ratio
-                            loss_ixx = eval('self.decoder_' + str(stage_i1) + '_' + str(layer_i1))(x1, self._image_restore(img))
-                            loss_ixy = eval('self.aux_classifier_' + str(stage_i1) + '_' + str(layer_i1))(x1, target)
-                            loss = ixx_r * loss_ixx + ixy_r * loss_ixy
-                            loss.backward()
-                            x1 = x1.detach()
-                            local_module_i1 += 1
-                
                 x1 = self.avgpool(x1)
-                x1 = x1.view(x1.size(0), -1)
+                x1 = x1.view(-1, 64)
                 logits1 = self.fc(x1)
                 loss1 = 0.01*(F.kl_div(logits1,logits))
                 loss = loss + loss1
