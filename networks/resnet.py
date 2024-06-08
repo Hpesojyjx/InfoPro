@@ -260,7 +260,7 @@ class InfoProResNet(nn.Module):
                     x1 = eval('self.sub_layer' + str(stage_i1))[layer_i1](x1)
                 
                 x1 = self.avgpool(x1)
-                x1 = x1.view(-1, 64)
+                x1 = x1.view(x.size(0), -1)
                 logits1 = self.fc(x1)
                 loss1 = 0.01*(F.kl_div(logits1,logits))
                 loss = loss + loss1
